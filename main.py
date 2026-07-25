@@ -367,7 +367,8 @@ def send_iphone_clipboard():
                 last_pc_clipboard_text = pyperclip.paste()
             except Exception:
                 pass
-            pc_state.update({"type": "image", "image_bytes": data, "timestamp": time.time()})
+            mime_in = "image/jpeg" if ("jpeg" in content_type or "jpg" in content_type or data.startswith(b"\xff\xd8\xff")) else "image/png"
+            pc_state.update({"type": "image", "image_bytes": data, "mime_type": mime_in, "timestamp": time.time()})
             gui_log("iPhone → PC: Image received", "RECV")
             return Response(status=204)
 
@@ -402,9 +403,11 @@ def get_pc_clipboard():
 
         elif pc_state["type"] == "image" and pc_state.get("image_bytes"):
             gui_log("PC → iPhone: Image sent", "SEND")
+            mime = pc_state.get("mime_type", "image/png")
+            fname = "clipboard.jpg" if mime == "image/jpeg" else "clipboard.png"
             resp = make_response(pc_state["image_bytes"])
-            resp.headers["Content-Type"]        = "image/png"
-            resp.headers["Content-Disposition"] = 'inline; filename="clipboard.png"'
+            resp.headers["Content-Type"]        = mime
+            resp.headers["Content-Disposition"] = f'inline; filename="{fname}"'
             resp.headers["Content-Length"]      = str(len(pc_state["image_bytes"]))
             return resp
     except Exception as e:
@@ -415,9 +418,10 @@ def get_pc_clipboard():
 _IGNORE_PATTERNS = ("airclip_temp_", "iphone_clip_temp_", "bplist00")
 
 def monitor_pc_clipboard():
-    """Continuously monitor host system clipboard for changes."""
+    """Continuously monitor host system clipboard for changes with zero CPU overhead."""
     global last_pc_clipboard_text, last_pc_clipboard_img_hash
     gui_log("Clipboard monitor active", "INFO")
+    last_fast_sig = None
 
     # Prime last_pc_clipboard_text on startup
     try:
@@ -448,20 +452,34 @@ def monitor_pc_clipboard():
                                         pass
 
                     if isinstance(img, Image.Image):
-                        pixel_hash = hashlib.md5(img.tobytes()).hexdigest() + f"_{img.size[0]}x{img.size[1]}_{img.mode}"
-                        if pixel_hash != last_pc_clipboard_img_hash:
+                        fast_sig = (img.size, img.mode)
+                        if fast_sig != last_fast_sig or last_pc_clipboard_img_hash is None:
                             buf = io.BytesIO()
-                            img.save(buf, format="PNG")
+                            if img.mode in ("RGBA", "LA") or (img.mode == "P" and "transparency" in img.info):
+                                img.save(buf, format="PNG", compress_level=1)
+                                mime_type = "image/png"
+                            else:
+                                img.convert("RGB").save(buf, format="JPEG", quality=85, optimize=False)
+                                mime_type = "image/jpeg"
+
                             img_bytes = buf.getvalue()
-                            last_pc_clipboard_img_hash = pixel_hash
-                            try:
-                                last_pc_clipboard_text = pyperclip.paste()
-                            except Exception:
-                                pass
-                            pc_state.update({"type": "image", "image_bytes": img_bytes, "timestamp": time.time()})
-                            gui_log("PC Copied: Image", "LOCAL")
-                            time.sleep(0.8)
-                            continue
+                            img_hash = hashlib.md5(img_bytes).hexdigest()
+                            if img_hash != last_pc_clipboard_img_hash:
+                                last_fast_sig = fast_sig
+                                last_pc_clipboard_img_hash = img_hash
+                                try:
+                                    last_pc_clipboard_text = pyperclip.paste()
+                                except Exception:
+                                    pass
+                                pc_state.update({
+                                    "type": "image",
+                                    "image_bytes": img_bytes,
+                                    "mime_type": mime_type,
+                                    "timestamp": time.time()
+                                })
+                                gui_log("PC Copied: Image", "LOCAL")
+                                time.sleep(0.4)
+                                continue
                 except Exception:
                     pass
 
@@ -486,7 +504,7 @@ def monitor_pc_clipboard():
                     pass
         except Exception:
             pass
-        time.sleep(0.5)
+        time.sleep(0.4)
 
 # ─── mDNS Zeroconf Auto-Discovery ─────────────────────────────────────────────
 def register_mdns():
