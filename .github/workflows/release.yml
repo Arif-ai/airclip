@@ -27,7 +27,7 @@ jobs:
 
       - name: Build AirClip Executable
         run: |
-          python build_exe.py
+          python scripts/build_exe.py
 
       - name: Create Release
         uses: softprops/action-gh-release@v2

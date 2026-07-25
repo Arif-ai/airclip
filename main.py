@@ -23,6 +23,8 @@ import hashlib
 import subprocess
 import threading
 import queue
+import ctypes
+from ctypes import wintypes
 import pyperclip
 import webview
 import qrcode
@@ -136,9 +138,51 @@ last_pc_clipboard_text     = None
 last_pc_clipboard_img_hash = None
 
 # ─── Cross-Platform Clipboard Helper ──────────────────────────────────────────
-def set_pc_image_clipboard(data: bytes) -> None:
-    """Write raw PNG image bytes to host system clipboard."""
+def set_pc_image_clipboard(data: bytes) -> bool:
+    """Write raw PNG/JPEG image bytes to host system clipboard instantaneously."""
     try:
+        if sys.platform == "win32":
+            try:
+                img = Image.open(io.BytesIO(data)).convert("RGB")
+                output = io.BytesIO()
+                img.save(output, "BMP")
+                bmp_data = output.getvalue()
+                dib_data = bmp_data[14:]  # Strip 14-byte BITMAPFILEHEADER to get CF_DIB payload
+
+                GMEM_MOVEABLE = 0x0002
+                CF_DIB = 8
+
+                user32 = ctypes.windll.user32
+                kernel32 = ctypes.windll.kernel32
+
+                kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+                kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+                kernel32.GlobalLock.restype = wintypes.LPVOID
+                kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+                kernel32.GlobalUnlock.restype = wintypes.BOOL
+                kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+                user32.OpenClipboard.restype = wintypes.BOOL
+                user32.OpenClipboard.argtypes = [wintypes.HWND]
+                user32.EmptyClipboard.restype = wintypes.BOOL
+                user32.SetClipboardData.restype = wintypes.HANDLE
+                user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+                user32.CloseClipboard.restype = wintypes.BOOL
+
+                h_global = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(dib_data))
+                if h_global:
+                    lp_global = kernel32.GlobalLock(h_global)
+                    ctypes.memmove(lp_global, dib_data, len(dib_data))
+                    kernel32.GlobalUnlock(h_global)
+
+                    if user32.OpenClipboard(None):
+                        user32.EmptyClipboard()
+                        user32.SetClipboardData(CF_DIB, h_global)
+                        user32.CloseClipboard()
+                        return True
+            except Exception as we:
+                gui_log(f"Fast Win32 image write warning: {we}", "WARN")
+
+        # Fallback for temp file method
         tmp_path = os.path.join(TEMP_DIR, f"airclip_temp_{time.time_ns()}.png")
         Image.open(io.BytesIO(data)).save(tmp_path, "PNG")
 
@@ -163,8 +207,10 @@ def set_pc_image_clipboard(data: bytes) -> None:
                 subprocess.run(["xclip", "-selection", "clipboard", "-target", "image/png", "-i", tmp_path], capture_output=True)
             except Exception:
                 subprocess.run(["wl-copy", "-t", "image/png", "<", tmp_path], shell=True, capture_output=True)
+        return True
     except Exception as e:
         gui_log(f"Clipboard image write error: {e}", "ERROR")
+        return False
 
 # ─── Logging & CORS Security Middleware ──────────────────────────────────────
 def gui_log(msg: str, tag: str = "INFO") -> None:
@@ -323,7 +369,7 @@ def send_iphone_clipboard():
                 pass
             pc_state.update({"type": "image", "image_bytes": data, "timestamp": time.time()})
             gui_log("iPhone → PC: Image received", "RECV")
-            return jsonify({"status": "ok", "type": "image"}), 200
+            return Response(status=204)
 
         elif data:
             text = extract_text_from_incoming(data)
@@ -336,7 +382,7 @@ def send_iphone_clipboard():
                 pc_state.update({"type": "text", "text": text, "timestamp": time.time()})
                 preview = text[:80] + ("..." if len(text) > 80 else "")
                 gui_log(f"iPhone → PC: '{preview}'", "RECV")
-                return jsonify({"status": "ok", "type": "text"}), 200
+                return Response(status=204)
     except Exception as e:
         gui_log(f"SEND error: {e}", "ERROR")
     return Response(status=204)
