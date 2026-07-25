@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airclip"
+version = "1.0.0"
+description = "Universal Clipboard Engine between Windows PC and iOS/Mac/Linux"
+readme = "README.md"
+requires-python = ">=3.9"
+license = {file = "LICENSE"}
+authors = [{name = "Arif"}]
+dependencies = [
+    "flask>=3.0.0",
+    "pywebview>=5.0.0",
+    "pillow>=10.0.0",
+    "pyperclip>=1.8.2",
+    "zeroconf>=0.131.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/Arif-ai/airclip"
