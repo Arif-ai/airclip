@@ -144,6 +144,8 @@ def set_pc_image_clipboard(data: bytes) -> bool:
         if sys.platform == "win32":
             try:
                 img = Image.open(io.BytesIO(data)).convert("RGB")
+                if img.width > 2560 or img.height > 2560:
+                    img.thumbnail((2560, 2560), Image.Resampling.LANCZOS)
                 output = io.BytesIO()
                 img.save(output, "BMP")
                 bmp_data = output.getvalue()
@@ -360,16 +362,22 @@ def send_iphone_clipboard():
         is_img_magic = data.startswith(b"\x89PNG") or data.startswith(b"\xff\xd8\xff") or data.startswith(b"GIF8")
 
         if data and (is_img_type or is_img_magic):
-            set_pc_image_clipboard(data)
             img_hash = hashlib.md5(data).hexdigest()
             last_pc_clipboard_img_hash = img_hash
-            try:
-                last_pc_clipboard_text = pyperclip.paste()
-            except Exception:
-                pass
             mime_in = "image/jpeg" if ("jpeg" in content_type or "jpg" in content_type or data.startswith(b"\xff\xd8\xff")) else "image/png"
             pc_state.update({"type": "image", "image_bytes": data, "mime_type": mime_in, "timestamp": time.time()})
             gui_log("iPhone → PC: Image received", "RECV")
+
+            # Asynchronous clipboard writing: Returns 204 immediately to iPhone in 1ms!
+            def _async_write():
+                try:
+                    set_pc_image_clipboard(data)
+                    global last_pc_clipboard_text
+                    last_pc_clipboard_text = pyperclip.paste()
+                except Exception as we:
+                    gui_log(f"Async write error: {we}", "WARN")
+
+            threading.Thread(target=_async_write, daemon=True).start()
             return Response(status=204)
 
         elif data:
